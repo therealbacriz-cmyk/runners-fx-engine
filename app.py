@@ -6,6 +6,8 @@ import urllib.request
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # ==================== CONFIGURATION ====================
 TWELVE_DATA_API_KEY = "6f9bc7ddd24c4453985e471b565fcd98"
@@ -78,7 +80,7 @@ async def twelve_data_listener():
     """Polls Twelve Data REST API continuously for live GBP/JPY prices"""
     global live_market_data, last_signal_state
     
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     real_high, real_low = await loop.run_in_executor(None, fetch_real_5m_pivots)
     
     print("⚡ Real-time REST Engine Active (Twelve Data)")
@@ -162,6 +164,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serves static files if you have additional assets
+app.mount("/static", StaticFiles(directory="."), name="static")
+
+@app.get("/")
+async def serve_dashboard():
+    """Serves the main web dashboard interface"""
+    return FileResponse("index.html")
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {"status": "Runners FX Engine is active and running"}
+
 @app.websocket("/ws/signals")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -177,6 +192,3 @@ if __name__ == "__main__":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         
     uvicorn.run(app, host="127.0.0.1", port=8000)
-@app.get("/")
-def read_root():
-    return {"status": "Runners FX Engine is active and running"}
