@@ -177,3 +177,6 @@ if __name__ == "__main__":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         
     uvicorn.run(app, host="127.0.0.1", port=8000)
+@app.get("/")
+def read_root():
+    return {"status": "Runners FX Engine is active and running"}
