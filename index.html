@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Runners FX — GBPJPY 5M Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen p-6">
+
+    <div class="max-w-4xl mx-auto space-y-6">
+        <!-- App Header -->
+        <div class="flex justify-between items-center bg-slate-900 p-6 rounded-xl border border-slate-800">
+            <div>
+                <h1 class="text-2xl font-bold text-white tracking-wide">Runners FX Live Structure Engine</h1>
+                <p class="text-sm text-slate-400">Timeframe: 5 Minutes | Confluence: Macro Bias + BOS</p>
+            </div>
+            <div id="connection-status" class="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                Connecting...
+            </div>
+        </div>
+
+        <!-- Main Signal Banner -->
+        <div id="signal-card" class="bg-slate-900 p-8 rounded-xl border border-slate-800 text-center transition-all duration-300">
+            <span class="text-xs uppercase tracking-widest text-slate-400 font-bold">Current Market Signal</span>
+            <div id="signal-text" class="text-5xl font-extrabold my-4 text-slate-500">SCANNING...</div>
+            <p id="signal-desc" class="text-slate-400 text-sm">Waiting for price to break structural swing points with macro confirmation...</p>
+        </div>
+
+        <!-- Metrics Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                <span class="text-xs text-slate-400 block mb-1">Live Price</span>
+                <span id="live-price" class="text-2xl font-bold text-white">---.---</span>
+            </div>
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                <span class="text-xs text-slate-400 block mb-1">Fundamental Bias</span>
+                <span id="macro-bias" class="text-lg font-semibold text-emerald-400">--</span>
+            </div>
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                <span class="text-xs text-slate-400 block mb-1">Stop Loss (SL)</span>
+                <span id="stop-loss" class="text-lg font-semibold text-rose-400">---.---</span>
+            </div>
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                <span class="text-xs text-slate-400 block mb-1">Take Profit (TP)</span>
+                <span id="take-profit" class="text-lg font-semibold text-blue-400">---.---</span>
+            </div>
+        </div>
+
+        <!-- Structural Pivots Panel -->
+        <div class="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
+            <h3 class="text-md font-semibold text-slate-300">Market Structure Pivots (5M)</h3>
+            <div class="flex justify-between text-sm py-2 border-b border-slate-800">
+                <span class="text-slate-400">Recent 5M Swing High (Resistance)</span>
+                <span id="swing-high" class="font-mono text-slate-200">---.---</span>
+            </div>
+            <div class="flex justify-between text-sm py-2">
+                <span class="text-slate-400">Recent 5M Swing Low (Support)</span>
+                <span id="swing-low" class="font-mono text-slate-200">---.---</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client Script -->
+    <script>
+        let socket;
+
+        function connectWebSocket() {
+            socket = new WebSocket("ws://127.0.0.1:8000/ws/signals");
+
+            socket.onopen = () => {
+                const statusEl = document.getElementById("connection-status");
+                statusEl.innerText = "Engine Connected (Live Stream)";
+                statusEl.className = "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                const formatPrice = (val) => val ? Number(val).toFixed(3) : "---.---";
+
+                document.getElementById("live-price").innerText = formatPrice(data.price);
+                document.getElementById("macro-bias").innerText = data.macro_bias || "--";
+                document.getElementById("swing-high").innerText = formatPrice(data.swing_high);
+                document.getElementById("swing-low").innerText = formatPrice(data.swing_low);
+                document.getElementById("stop-loss").innerText = formatPrice(data.sl);
+                document.getElementById("take-profit").innerText = formatPrice(data.tp);
+
+                const signalCard = document.getElementById("signal-card");
+                const signalText = document.getElementById("signal-text");
+                const signalDesc = document.getElementById("signal-desc");
+
+                if (data.signal === "BUY") {
+                    signalCard.className = "bg-emerald-950/40 p-8 rounded-xl border border-emerald-500/50 text-center";
+                    signalText.className = "text-5xl font-extrabold my-4 text-emerald-400";
+                    signalText.innerText = "BUY SIGNAL";
+                    signalDesc.innerText = `Price broke 5M Swing High (${formatPrice(data.swing_high)}) with ${data.macro_bias} bias.`;
+                } else if (data.signal === "SELL") {
+                    signalCard.className = "bg-rose-950/40 p-8 rounded-xl border border-rose-500/50 text-center";
+                    signalText.className = "text-5xl font-extrabold my-4 text-rose-400";
+                    signalText.innerText = "SELL SIGNAL";
+                    signalDesc.innerText = `Price broke 5M Swing Low (${formatPrice(data.swing_low)}) with ${data.macro_bias} bias.`;
+                } else {
+                    signalCard.className = "bg-slate-900 p-8 rounded-xl border border-slate-800 text-center";
+                    signalText.className = "text-5xl font-extrabold my-4 text-slate-500";
+                    signalText.innerText = "NEUTRAL";
+                    signalDesc.innerText = "Price ranging within swing limits. Awaiting clear structural break.";
+                }
+            };
+
+            socket.onclose = () => {
+                const statusEl = document.getElementById("connection-status");
+                statusEl.innerText = "Reconnecting...";
+                statusEl.className = "px-3 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20";
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            socket.onerror = (error) => {
+                console.error("WebSocket Error:", error);
+            };
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
