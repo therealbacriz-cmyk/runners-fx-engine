@@ -19,6 +19,10 @@ TELEGRAM_CHAT_ID = "1825789803"
 # Session Time Filter (East Africa Time)
 START_HOUR_EAT = 7   # 7:00 AM EAT
 END_HOUR_EAT = 19   # 7:00 PM EAT
+
+# Filter Settings (To avoid minor structure breaks)
+PIVOT_LOOKBACK = 2       # Candle distance to confirm a major swing peak/valley
+BOS_BUFFER_PIPS = 0.050  # 5 pips buffer above/below structure for valid BOS
 # =======================================================
 
 live_market_data = {
@@ -27,6 +31,7 @@ live_market_data = {
     "swing_high": 0.0,
     "swing_low": 0.0,
     "signal": "SCANNING...",
+    "entry_price": 0.0,
     "sl": 0.0,
     "tp": 0.0,
     "macro_bias": "BULLISH_GBP"
@@ -40,7 +45,38 @@ def is_within_trading_window() -> bool:
     now_eat = datetime.now(eat_tz)
     return START_HOUR_EAT <= now_eat.hour < END_HOUR_EAT
 
-async def send_telegram_alert(session, signal_type, price, sl, tp):
+def find_major_swings(candles, lookback=2):
+    """
+    Identifies major fractal swing highs and lows to prevent counting minor noise.
+    """
+    highs = [float(c["high"]) for c in candles]
+    lows = [float(c["low"]) for c in candles]
+    
+    major_high = None
+    major_low = None
+
+    for i in range(lookback, len(candles) - lookback):
+        if all(highs[i] > highs[i - k] for k in range(1, lookback + 1)) and \
+           all(highs[i] > highs[i + k] for k in range(1, lookback + 1)):
+            if major_high is None:
+                major_high = highs[i]
+
+        if all(lows[i] < lows[i - k] for k in range(1, lookback + 1)) and \
+           all(lows[i] < lows[i + k] for k in range(1, lookback + 1)):
+            if major_low is None:
+                major_low = lows[i]
+
+        if major_high and major_low:
+            break
+
+    if major_high is None:
+        major_high = max(highs[2:])
+    if major_low is None:
+        major_low = min(lows[2:])
+
+    return round(major_high, 3), round(major_low, 3)
+
+async def send_telegram_alert(session, signal_type, entry_price, sl, tp):
     if not TELEGRAM_BOT_TOKEN:
         return
 
@@ -48,10 +84,10 @@ async def send_telegram_alert(session, signal_type, price, sl, tp):
     message = (
         f"{emoji} <b>RUNNERS FX — GBPJPY 5M SIGNAL</b> {emoji}\n\n"
         f"<b>Action:</b> {signal_type}\n"
-        f"<b>Entry Price:</b> {price:.3f}\n"
+        f"<b>Entry Price:</b> {entry_price:.3f}\n"
         f"<b>Stop Loss (SL):</b> {sl:.3f}\n"
         f"<b>Take Profit (TP):</b> {tp:.3f}\n\n"
-        f"<i>Structure Breakout Confirmed (Candle Close)</i>"
+        f"<i>Structure Breakout Confirmed (Body + Buffer)</i>"
     )
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -73,7 +109,7 @@ async def twelve_data_listener():
     global live_market_data, last_alerted_candle
     
     print("⚡ Real-time Engine Active (REST Polling Mode)")
-    url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=10&apikey={TWELVE_DATA_API_KEY}"
+    url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
     
     async with aiohttp.ClientSession() as session:
         while True:
@@ -82,11 +118,11 @@ async def twelve_data_listener():
                 if not is_within_trading_window():
                     live_market_data.update({
                         "signal": "OUTSIDE_TRADING_HOURS",
+                        "entry_price": 0.0,
                         "sl": 0.0,
                         "tp": 0.0
                     })
                     print("🌙 Outside active window (7:00 AM – 7:00 PM EAT). Pausing signals...")
-                    # Sleep 60s when outside trading window to conserve API credits
                     await asyncio.sleep(60)
                     continue
 
@@ -94,34 +130,36 @@ async def twelve_data_listener():
                 async with session.get(url, timeout=5) as resp:
                     data = await resp.json()
                     
-                    if "values" in data and len(data["values"]) >= 3:
+                    if "values" in data and len(data["values"]) >= 10:
                         candles = data["values"]
                         
                         price = round(float(candles[0]["close"]), 3)
                         closed_candle = candles[1]
                         
-                        past_candles = candles[2:]
-                        swing_high = round(max(float(c["high"]) for c in past_candles), 3)
-                        swing_low = round(min(float(c["low"]) for c in past_candles), 3)
+                        swing_high, swing_low = find_major_swings(candles, lookback=PIVOT_LOOKBACK)
                         
                         signal = "NEUTRAL"
-                        sl = swing_low
-                        tp = swing_high
+                        entry_price = 0.0
+                        sl = 0.0
+                        tp = 0.0
 
                         c_close = float(closed_candle["close"])
                         c_time = closed_candle["datetime"]
 
-                        if c_close > swing_high:
+                        # Check for valid breakout signals with buffer
+                        if c_close >= (swing_high + BOS_BUFFER_PIPS):
                             signal = "BUY"
+                            entry_price = price
                             sl = swing_low
-                            tp = round(price + (price - swing_low) * 2, 3)
-                        elif c_close < swing_low:
+                            tp = round(price + (price - swing_low) * 1.0, 3)  # 1:1 Risk-to-Reward
+                        elif c_close <= (swing_low - BOS_BUFFER_PIPS):
                             signal = "SELL"
+                            entry_price = price
                             sl = swing_high
-                            tp = round(price - (swing_high - price) * 2, 3)
+                            tp = round(price - (swing_high - price) * 1.0, 3)  # 1:1 Risk-to-Reward
 
                         if signal != "NEUTRAL" and c_time != last_alerted_candle:
-                            await send_telegram_alert(session, signal, price, sl, tp)
+                            await send_telegram_alert(session, signal, entry_price, sl, tp)
                             last_alerted_candle = c_time
 
                         live_market_data.update({
@@ -129,10 +167,11 @@ async def twelve_data_listener():
                             "swing_high": swing_high,
                             "swing_low": swing_low,
                             "signal": signal,
+                            "entry_price": entry_price,
                             "sl": sl,
                             "tp": tp
                         })
-                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal}")
+                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal} | Entry: {entry_price:.3f} | SL: {sl:.3f} | TP: {tp:.3f}")
 
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")

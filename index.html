@@ -21,38 +21,25 @@
         </div>
 
         <!-- Main Signal Banner -->
-        <div id="signal-card" class="bg-slate-900 p-8 rounded-xl border border-slate-800 text-center transition-all duration-300">
+        <div id="signal-card" class="bg-slate-900 p-8 rounded-xl border border-slate-800 text-center transition-all duration-300 space-y-4">
             <span class="text-xs uppercase tracking-widest text-slate-400 font-bold">Current Market Signal</span>
-            <div id="signal-text" class="text-5xl font-extrabold my-4 text-slate-500">SCANNING...</div>
+            <div id="signal-text" class="text-5xl font-extrabold my-2 text-slate-500">SCANNING...</div>
             <p id="signal-desc" class="text-slate-400 text-sm">Waiting for price to break structural swing points with macro confirmation...</p>
-        </div>
-
-        <!-- TradingView Embedded Live Chart -->
-        <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 space-y-3">
-            <div class="flex justify-between items-center">
-                <span class="text-sm font-semibold text-slate-300">Live Execution Chart (GBPJPY 5M)</span>
-                <span class="text-xs text-slate-500">Source: TradingView</span>
-            </div>
-            <div class="w-full h-96 rounded-lg overflow-hidden border border-slate-800">
-                <div id="tradingview_gbpjpy" class="w-full h-full"></div>
-                <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-                <script type="text/javascript">
-                    new TradingView.widget({
-                        "autosize": true,
-                        "symbol": "OANDA:GBPJPY",
-                        "interval": "5",
-                        "timezone": "Etc/UTC",
-                        "theme": "dark",
-                        "style": "1",
-                        "locale": "en",
-                        "toolbar_bg": "#0f172a",
-                        "enable_publishing": false,
-                        "hide_top_toolbar": false,
-                        "hide_legend": false,
-                        "save_image": false,
-                        "container_id": "tradingview_gbpjpy"
-                    });
-                </script>
+            
+            <!-- Signal Execution Details Box (Shows on BUY/SELL) -->
+            <div id="signal-params" class="hidden grid-cols-3 gap-4 pt-4 border-t border-slate-800 max-w-lg mx-auto">
+                <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
+                    <span class="text-xs text-slate-400 block mb-1 uppercase font-medium">Entry Price</span>
+                    <span id="banner-entry" class="text-xl font-bold text-amber-400">---.---</span>
+                </div>
+                <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
+                    <span class="text-xs text-slate-400 block mb-1 uppercase font-medium">Stop Loss (SL)</span>
+                    <span id="banner-sl" class="text-xl font-bold text-rose-400">---.---</span>
+                </div>
+                <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
+                    <span class="text-xs text-slate-400 block mb-1 uppercase font-medium">Take Profit (TP)</span>
+                    <span id="banner-tp" class="text-xl font-bold text-emerald-400">---.---</span>
+                </div>
             </div>
         </div>
 
@@ -67,11 +54,11 @@
                 <span id="macro-bias" class="text-lg font-semibold text-emerald-400">--</span>
             </div>
             <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                <span class="text-xs text-slate-400 block mb-1">Stop Loss (SL)</span>
+                <span class="text-xs text-slate-400 block mb-1">Signal Stop Loss</span>
                 <span id="stop-loss" class="text-lg font-semibold text-rose-400">---.---</span>
             </div>
             <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                <span class="text-xs text-slate-400 block mb-1">Take Profit (TP)</span>
+                <span class="text-xs text-slate-400 block mb-1">Signal Take Profit</span>
                 <span id="take-profit" class="text-lg font-semibold text-blue-400">---.---</span>
             </div>
         </div>
@@ -139,7 +126,7 @@
 
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                const formatPrice = (val) => val ? Number(val).toFixed(3) : "---.---";
+                const formatPrice = (val) => (val && val > 0) ? Number(val).toFixed(3) : "---.---";
 
                 document.getElementById("live-price").innerText = formatPrice(data.price);
                 document.getElementById("macro-bias").innerText = data.macro_bias || "--";
@@ -151,28 +138,45 @@
                 const signalCard = document.getElementById("signal-card");
                 const signalText = document.getElementById("signal-text");
                 const signalDesc = document.getElementById("signal-desc");
+                const signalParams = document.getElementById("signal-params");
 
-                if (data.signal === "BUY") {
-                    signalCard.className = "bg-emerald-950/40 p-8 rounded-xl border border-emerald-500/50 text-center";
-                    signalText.className = "text-5xl font-extrabold my-4 text-emerald-400";
-                    signalText.innerText = "BUY SIGNAL";
-                    signalDesc.innerText = `Price broke 5M Swing High (${formatPrice(data.swing_high)}) with ${data.macro_bias} bias.`;
-                } else if (data.signal === "SELL") {
-                    signalCard.className = "bg-rose-950/40 p-8 rounded-xl border border-rose-500/50 text-center";
-                    signalText.className = "text-5xl font-extrabold my-4 text-rose-400";
-                    signalText.innerText = "SELL SIGNAL";
-                    signalDesc.innerText = `Price broke 5M Swing Low (${formatPrice(data.swing_low)}) with ${data.macro_bias} bias.`;
+                if (data.signal === "BUY" || data.signal === "SELL") {
+                    const isBuy = data.signal === "BUY";
+                    signalCard.className = isBuy 
+                        ? "bg-emerald-950/40 p-8 rounded-xl border border-emerald-500/50 text-center space-y-4"
+                        : "bg-rose-950/40 p-8 rounded-xl border border-rose-500/50 text-center space-y-4";
+                    
+                    signalText.className = isBuy ? "text-5xl font-extrabold my-2 text-emerald-400" : "text-5xl font-extrabold my-2 text-rose-400";
+                    signalText.innerText = `${data.signal} SIGNAL`;
+                    
+                    signalDesc.innerText = isBuy 
+                        ? `Price broke 5M Swing High (${formatPrice(data.swing_high)}) with ${data.macro_bias} bias.`
+                        : `Price broke 5M Swing Low (${formatPrice(data.swing_low)}) with ${data.macro_bias} bias.`;
+
+                    // Populate and display signal execution details box
+                    document.getElementById("banner-entry").innerText = formatPrice(data.entry_price || data.price);
+                    document.getElementById("banner-sl").innerText = formatPrice(data.sl);
+                    document.getElementById("banner-tp").innerText = formatPrice(data.tp);
+                    signalParams.classList.remove("hidden");
+                    signalParams.classList.add("grid");
+
                 } else {
-                    signalCard.className = "bg-slate-900 p-8 rounded-xl border border-slate-800 text-center";
-                    signalText.className = "text-5xl font-extrabold my-4 text-slate-500";
-                    signalText.innerText = "NEUTRAL";
-                    signalDesc.innerText = "Price ranging within swing limits. Awaiting clear structural break.";
+                    signalCard.className = "bg-slate-900 p-8 rounded-xl border border-slate-800 text-center space-y-4";
+                    signalText.className = "text-5xl font-extrabold my-2 text-slate-500";
+                    signalText.innerText = data.signal === "OUTSIDE_TRADING_HOURS" ? "MARKET PAUSED" : "SCANNING...";
+                    signalDesc.innerText = data.signal === "OUTSIDE_TRADING_HOURS" 
+                        ? "Outside active trading window (7:00 AM – 7:00 PM EAT)." 
+                        : "Price ranging within swing limits. Awaiting clear structural break.";
+                    
+                    // Hide execution parameters box when neutral
+                    signalParams.classList.add("hidden");
+                    signalParams.classList.remove("grid");
                 }
 
-                if (data.signal !== "NEUTRAL" && data.signal !== previousSignal) {
+                if (data.signal !== "NEUTRAL" && data.signal !== "SCANNING..." && data.signal !== "OUTSIDE_TRADING_HOURS" && data.signal !== previousSignal) {
                     playSignalSound(data.signal);
                     previousSignal = data.signal;
-                } else if (data.signal === "NEUTRAL") {
+                } else if (data.signal === "NEUTRAL" || data.signal === "SCANNING...") {
                     previousSignal = "NEUTRAL";
                 }
             };
