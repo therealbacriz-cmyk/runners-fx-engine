@@ -28,24 +28,31 @@ live_market_data = {
 }
 
 last_signal_state = "NEUTRAL"
+last_alerted_candle = None  # Tracks the candle timestamp to prevent multiple Telegram alerts
 
-def fetch_real_5m_pivots():
-    """Fetches real 5-minute candle structure from Twelve Data REST API"""
+def fetch_real_5m_candles():
+    """Fetches completed 5-minute candles from Twelve Data REST API"""
     if not TWELVE_DATA_API_KEY or TWELVE_DATA_API_KEY == "YOUR_TWELVE_DATA_API_KEY_HERE":
-        return None, None
+        return None, None, None
     try:
         url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=10&apikey={TWELVE_DATA_API_KEY}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode())
-            if "values" in data:
+            if "values" in data and len(data["values"]) >= 2:
                 candles = data["values"]
-                highs = [float(c["high"]) for c in candles]
-                lows = [float(c["low"]) for c in candles]
-                return max(highs), min(lows)
+                # candles[0] is the active/open candle; candles[1] is the LAST CLOSED candle
+                closed_candle = candles[1]
+                
+                # Historic high/low structure from older closed candles
+                past_candles = candles[2:]
+                highs = [float(c["high"]) for c in past_candles]
+                lows = [float(c["low"]) for c in past_candles]
+                
+                return closed_candle, max(highs), min(lows)
     except Exception as e:
-        print(f"⚠️ Failed to fetch 5M pivots: {e}")
-    return None, None
+        print(f"⚠️ Failed to fetch 5M candles: {e}")
+    return None, None, None
 
 def send_telegram_alert(signal_type, price, sl, tp):
     """Sends formatted trade signal to Telegram"""
@@ -59,7 +66,7 @@ def send_telegram_alert(signal_type, price, sl, tp):
         f"<b>Entry Price:</b> {price:.3f}\n"
         f"<b>Stop Loss (SL):</b> {sl:.3f}\n"
         f"<b>Take Profit (TP):</b> {tp:.3f}\n\n"
-        f"<i>Structure Breakout Confirmed</i>"
+        f"<i>Structure Breakout Confirmed (Candle Close)</i>"
     )
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -77,17 +84,15 @@ def send_telegram_alert(signal_type, price, sl, tp):
         print(f"❌ Telegram Error: {e}")
 
 async def twelve_data_listener():
-    """Polls Twelve Data REST API continuously for live GBP/JPY prices"""
-    global live_market_data, last_signal_state
+    """Polls Twelve Data REST API continuously and confirms breakouts on 5M candle close"""
+    global live_market_data, last_signal_state, last_alerted_candle
     
     loop = asyncio.get_running_loop()
-    real_high, real_low = await loop.run_in_executor(None, fetch_real_5m_pivots)
-    
-    print("⚡ Real-time REST Engine Active (Twelve Data)")
-    tick_counter = 0
+    print("⚡ Real-time Structure Engine Active (Candle-Close Confirmed)")
     
     while True:
         try:
+            # 1. Fetch live price
             url = f"https://api.twelvedata.com/price?symbol=GBP/JPY&apikey={TWELVE_DATA_API_KEY}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             
@@ -101,30 +106,35 @@ async def twelve_data_listener():
                 price = round(float(data["price"]), 3)
                 print(f"📥 Live GBP/JPY Price: {price:.3f}")
                 
-                # Refresh 5M structure pivots periodically
-                tick_counter += 1
-                if tick_counter % 15 == 0 or real_high is None:
-                    h, l = await loop.run_in_executor(None, fetch_real_5m_pivots)
-                    if h and l:
-                        real_high, real_low = h, l
-
+                # 2. Fetch completed candle structure
+                closed_candle, real_high, real_low = await loop.run_in_executor(None, fetch_real_5m_candles)
+                
                 swing_high = round(real_high if real_high else price + 0.120, 3)
                 swing_low = round(real_low if real_low else price - 0.120, 3)
                 
-                # Breakout logic
-                if price > swing_high:
-                    signal = "BUY"
-                    sl = swing_low
-                    tp = round(price + (price - swing_low) * 2, 3)
-                elif price < swing_low:
-                    signal = "SELL"
-                    sl = swing_high
-                    tp = round(price - (swing_high - price) * 2, 3)
-                else:
-                    signal = "NEUTRAL"
-                    sl = swing_low
-                    tp = swing_high
-                    
+                signal = "NEUTRAL"
+                sl = swing_low
+                tp = swing_high
+
+                # 3. Verify breakout against the LAST CLOSED CANDLE
+                if closed_candle:
+                    c_close = float(closed_candle["close"])
+                    c_time = closed_candle["datetime"] # Timestamp of the closed 5M candle
+
+                    if c_close > swing_high:
+                        signal = "BUY"
+                        sl = swing_low
+                        tp = round(price + (price - swing_low) * 2, 3)
+                    elif c_close < swing_low:
+                        signal = "SELL"
+                        sl = swing_high
+                        tp = round(price - (swing_high - price) * 2, 3)
+
+                    # 4. Fire Telegram alert ONCE per breakout candle
+                    if signal != "NEUTRAL" and c_time != last_alerted_candle:
+                        send_telegram_alert(signal, price, sl, tp)
+                        last_alerted_candle = c_time  # Prevents repeated notifications on current candle
+
                 live_market_data.update({
                     "price": price,
                     "swing_high": swing_high,
@@ -133,20 +143,13 @@ async def twelve_data_listener():
                     "sl": sl,
                     "tp": tp
                 })
-                
-                # Trigger Telegram notification on new state transition
-                if signal != "NEUTRAL" and signal != last_signal_state:
-                    send_telegram_alert(signal, price, sl, tp)
-                    last_signal_state = signal
-                elif signal == "NEUTRAL":
-                    last_signal_state = "NEUTRAL"
+
             elif "message" in data:
                 print(f"⚠️ Twelve Data API Notice: {data['message']}")
 
         except Exception as e:
             print(f"⚠️ Polling Error: {e}")
             
-        # Poll every 3 seconds to keep data fresh while staying well within free rate limits
         await asyncio.sleep(3)
 
 @asynccontextmanager
@@ -164,7 +167,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serves static files if you have additional assets
 app.mount("/static", StaticFiles(directory="."), name="static")
 
 @app.get("/")
