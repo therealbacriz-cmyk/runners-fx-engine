@@ -37,7 +37,13 @@ live_market_data = {
     "macro_bias": "BULLISH_GBP"
 }
 
+# Dynamic Structure Tracking
+active_swing_high = None
+active_swing_low = None
+buy_level_triggered = False
+sell_level_triggered = False
 last_alerted_candle = None
+
 
 def is_within_trading_window() -> bool:
     """Checks if current time in Uganda/EAT is between 7:00 AM and 7:00 PM"""
@@ -45,36 +51,51 @@ def is_within_trading_window() -> bool:
     now_eat = datetime.now(eat_tz)
     return START_HOUR_EAT <= now_eat.hour < END_HOUR_EAT
 
-def find_major_swings(candles, lookback=2):
+
+def update_active_swings(candles, lookback=2):
     """
-    Identifies major fractal swing highs and lows to prevent counting minor noise.
+    Identifies major fractal swing highs and lows and updates active levels 
+    ONLY when a brand-new fractal forms, resetting the trigger state.
     """
+    global active_swing_high, active_swing_low, buy_level_triggered, sell_level_triggered
+
     highs = [float(c["high"]) for c in candles]
     lows = [float(c["low"]) for c in candles]
-    
-    major_high = None
-    major_low = None
 
-    for i in range(lookback, len(candles) - lookback):
-        if all(highs[i] > highs[i - k] for k in range(1, lookback + 1)) and \
-           all(highs[i] > highs[i + k] for k in range(1, lookback + 1)):
-            if major_high is None:
-                major_high = highs[i]
+    # Search for the most recent valid fractal pivot
+    for i in range(lookback + 1, len(candles) - lookback):
+        is_pivot_high = all(highs[i] > highs[i - k] for k in range(1, lookback + 1)) and \
+                        all(highs[i] > highs[i + k] for k in range(1, lookback + 1))
 
-        if all(lows[i] < lows[i - k] for k in range(1, lookback + 1)) and \
-           all(lows[i] < lows[i + k] for k in range(1, lookback + 1)):
-            if major_low is None:
-                major_low = lows[i]
+        is_pivot_low = all(lows[i] < lows[i - k] for k in range(1, lookback + 1)) and \
+                       all(lows[i] < lows[i + k] for k in range(1, lookback + 1))
 
-        if major_high and major_low:
+        # Check for new High structure
+        if is_pivot_high:
+            new_high = round(highs[i], 3)
+            if active_swing_high != new_high:
+                active_swing_high = new_high
+                buy_level_triggered = False  # Reset state for fresh high breakout
             break
 
-    if major_high is None:
-        major_high = max(highs[2:])
-    if major_low is None:
-        major_low = min(lows[2:])
+    for i in range(lookback + 1, len(candles) - lookback):
+        is_pivot_low = all(lows[i] < lows[i - k] for k in range(1, lookback + 1)) and \
+                       all(lows[i] < lows[i + k] for k in range(1, lookback + 1))
 
-    return round(major_high, 3), round(major_low, 3)
+        # Check for new Low structure
+        if is_pivot_low:
+            new_low = round(lows[i], 3)
+            if active_swing_low != new_low:
+                active_swing_low = new_low
+                sell_level_triggered = False  # Reset state for fresh low breakout
+            break
+
+    # Fallbacks if no fractal is found in history window
+    if active_swing_high is None and len(highs) > 2:
+        active_swing_high = round(max(highs[2:]), 3)
+    if active_swing_low is None and len(lows) > 2:
+        active_swing_low = round(min(lows[2:]), 3)
+
 
 async def send_telegram_alert(session, signal_type, entry_price, sl, tp):
     if not TELEGRAM_BOT_TOKEN:
@@ -87,16 +108,16 @@ async def send_telegram_alert(session, signal_type, entry_price, sl, tp):
         f"<b>Entry Price:</b> {entry_price:.3f}\n"
         f"<b>Stop Loss (SL):</b> {sl:.3f}\n"
         f"<b>Take Profit (TP):</b> {tp:.3f} (1:2 R:R)\n\n"
-        f"<i>Structure Breakout Confirmed (Body + Buffer)</i>"
+        f"<i>Structure Breakout Confirmed (Recent Level)</i>"
     )
-    
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML"
     }
-    
+
     try:
         async with session.post(url, json=payload, timeout=3) as resp:
             if resp.status == 200:
@@ -104,13 +125,15 @@ async def send_telegram_alert(session, signal_type, entry_price, sl, tp):
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
 
+
 async def twelve_data_listener():
     """REST polling engine with strict 7 AM - 7 PM EAT trading window enforcement"""
     global live_market_data, last_alerted_candle
-    
+    global active_swing_high, active_swing_low, buy_level_triggered, sell_level_triggered
+
     print("⚡ Real-time Engine Active (REST Polling Mode)")
     url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
-    
+
     async with aiohttp.ClientSession() as session:
         while True:
             try:
@@ -129,15 +152,16 @@ async def twelve_data_listener():
                 # 2. Fetch live market data during active hours
                 async with session.get(url, timeout=5) as resp:
                     data = await resp.json()
-                    
+
                     if "values" in data and len(data["values"]) >= 10:
                         candles = data["values"]
-                        
+
                         price = round(float(candles[0]["close"]), 3)
                         closed_candle = candles[1]
-                        
-                        swing_high, swing_low = find_major_swings(candles, lookback=PIVOT_LOOKBACK)
-                        
+
+                        # Update active structure levels with fractal detection
+                        update_active_swings(candles, lookback=PIVOT_LOOKBACK)
+
                         signal = "NEUTRAL"
                         entry_price = 0.0
                         sl = 0.0
@@ -146,32 +170,36 @@ async def twelve_data_listener():
                         c_close = float(closed_candle["close"])
                         c_time = closed_candle["datetime"]
 
-                        # Check for valid breakout signals with buffer (1:2 RR Target)
-                        if c_close >= (swing_high + BOS_BUFFER_PIPS):
+                        # Check breakout ONLY against the active recent level if not yet triggered
+                        if active_swing_high and not buy_level_triggered and c_close >= (active_swing_high + BOS_BUFFER_PIPS):
                             signal = "BUY"
                             entry_price = price
-                            sl = swing_low
-                            tp = round(price + (price - swing_low) * 2.0, 3)  # 1:2 Risk-to-Reward
-                        elif c_close <= (swing_low - BOS_BUFFER_PIPS):
+                            sl = active_swing_low if active_swing_low else round(price - 0.200, 3)
+                            tp = round(price + (price - sl) * 2.0, 3)  # 1:2 Risk-to-Reward
+                            buy_level_triggered = True  # Mark active level as broken
+
+                        elif active_swing_low and not sell_level_triggered and c_close <= (active_swing_low - BOS_BUFFER_PIPS):
                             signal = "SELL"
                             entry_price = price
-                            sl = swing_high
-                            tp = round(price - (swing_high - price) * 2.0, 3)  # 1:2 Risk-to-Reward
+                            sl = active_swing_high if active_swing_high else round(price + 0.200, 3)
+                            tp = round(price - (sl - price) * 2.0, 3)  # 1:2 Risk-to-Reward
+                            sell_level_triggered = True  # Mark active level as broken
 
+                        # Send Telegram Notification once per breakout candle
                         if signal != "NEUTRAL" and c_time != last_alerted_candle:
                             await send_telegram_alert(session, signal, entry_price, sl, tp)
                             last_alerted_candle = c_time
 
                         live_market_data.update({
                             "price": price,
-                            "swing_high": swing_high,
-                            "swing_low": swing_low,
-                            "signal": signal,
+                            "swing_high": active_swing_high if active_swing_high else 0.0,
+                            "swing_low": active_swing_low if active_swing_low else 0.0,
+                            "signal": signal if signal != "NEUTRAL" else "SCANNING...",
                             "entry_price": entry_price,
                             "sl": sl,
                             "tp": tp
                         })
-                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal} | Entry: {entry_price:.3f} | SL: {sl:.3f} | TP: {tp:.3f} (1:2 R:R)")
+                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | High: {active_swing_high} | Low: {active_swing_low} | Signal: {signal}")
 
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")
@@ -182,14 +210,16 @@ async def twelve_data_listener():
 
             except Exception as e:
                 print(f"⚠️ Engine Polling Error: {e}")
-                
+
             await asyncio.sleep(15)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(twelve_data_listener())
     yield
     task.cancel()
+
 
 app = FastAPI(title="Runners FX Engine", lifespan=lifespan)
 
@@ -202,13 +232,16 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="."), name="static")
 
+
 @app.get("/")
 async def serve_dashboard():
     return FileResponse("index.html")
 
+
 @app.get("/health")
 def health_check():
     return {"status": "Runners FX Engine active"}
+
 
 @app.websocket("/ws/signals")
 async def websocket_endpoint(websocket: WebSocket):
@@ -220,8 +253,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
+
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
+
     uvicorn.run(app, host="127.0.0.1", port=8000)
