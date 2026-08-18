@@ -2,7 +2,7 @@ import sys
 import asyncio
 import json
 import uvicorn
-import urllib.request
+import aiohttp
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,6 @@ TELEGRAM_BOT_TOKEN = "8631774112:AAFy8m2EkEa6sqLmRs129tiTDWR57WfY7OE"
 TELEGRAM_CHAT_ID = "1825789803"
 # =======================================================
 
-# Global market state
 live_market_data = {
     "symbol": "GBP/JPY",
     "price": 190.500,
@@ -28,35 +27,11 @@ live_market_data = {
 }
 
 last_signal_state = "NEUTRAL"
-last_alerted_candle = None  # Tracks the candle timestamp to prevent multiple Telegram alerts
+last_alerted_candle = None
 
-def fetch_real_5m_candles():
-    """Fetches completed 5-minute candles from Twelve Data REST API"""
-    if not TWELVE_DATA_API_KEY or TWELVE_DATA_API_KEY == "YOUR_TWELVE_DATA_API_KEY_HERE":
-        return None, None, None
-    try:
-        url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=10&apikey={TWELVE_DATA_API_KEY}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            data = json.loads(resp.read().decode())
-            if "values" in data and len(data["values"]) >= 2:
-                candles = data["values"]
-                # candles[0] is the active/open candle; candles[1] is the LAST CLOSED candle
-                closed_candle = candles[1]
-                
-                # Historic high/low structure from older closed candles
-                past_candles = candles[2:]
-                highs = [float(c["high"]) for c in past_candles]
-                lows = [float(c["low"]) for c in past_candles]
-                
-                return closed_candle, max(highs), min(lows)
-    except Exception as e:
-        print(f"⚠️ Failed to fetch 5M candles: {e}")
-    return None, None, None
-
-def send_telegram_alert(signal_type, price, sl, tp):
-    """Sends formatted trade signal to Telegram"""
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+async def send_telegram_alert(session, signal_type, price, sl, tp):
+    """Sends formatted trade signal to Telegram asynchronously"""
+    if not TELEGRAM_BOT_TOKEN:
         return
 
     emoji = "🟢" if signal_type == "BUY" else "🔴"
@@ -70,87 +45,88 @@ def send_telegram_alert(signal_type, price, sl, tp):
     )
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = json.dumps({
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML"
-    }).encode("utf-8")
+    }
     
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req, timeout=3)
-        print(f"📱 Telegram alert sent for {signal_type}!")
+        async with session.post(url, json=payload, timeout=3) as resp:
+            if resp.status == 200:
+                print(f"📱 Telegram alert sent for {signal_type}!")
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
 
 async def twelve_data_listener():
-    """Polls Twelve Data REST API continuously and confirms breakouts on 5M candle close"""
+    """Ultra-low latency async polling loop"""
     global live_market_data, last_signal_state, last_alerted_candle
     
-    loop = asyncio.get_running_loop()
-    print("⚡ Real-time Structure Engine Active (Candle-Close Confirmed)")
+    print("⚡ Real-time Async Engine Active (Zero-Lag Mode)")
     
-    while True:
-        try:
-            # 1. Fetch live price
-            url = f"https://api.twelvedata.com/price?symbol=GBP/JPY&apikey={TWELVE_DATA_API_KEY}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            
-            def get_price():
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    return json.loads(resp.read().decode())
+    url = f"https://api.twelvedata.com/time_series?symbol=GBP/JPY&interval=5min&outputsize=10&apikey={TWELVE_DATA_API_KEY}"
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                # Fetch time series & price in a single async non-blocking HTTP call
+                async with session.get(url, timeout=3) as resp:
+                    data = await resp.json()
                     
-            data = await loop.run_in_executor(None, get_price)
-            
-            if "price" in data:
-                price = round(float(data["price"]), 3)
-                print(f"📥 Live GBP/JPY Price: {price:.3f}")
-                
-                # 2. Fetch completed candle structure
-                closed_candle, real_high, real_low = await loop.run_in_executor(None, fetch_real_5m_candles)
-                
-                swing_high = round(real_high if real_high else price + 0.120, 3)
-                swing_low = round(real_low if real_low else price - 0.120, 3)
-                
-                signal = "NEUTRAL"
-                sl = swing_low
-                tp = swing_high
-
-                # 3. Verify breakout against the LAST CLOSED CANDLE
-                if closed_candle:
-                    c_close = float(closed_candle["close"])
-                    c_time = closed_candle["datetime"] # Timestamp of the closed 5M candle
-
-                    if c_close > swing_high:
-                        signal = "BUY"
+                    if "values" in data and len(data["values"]) >= 2:
+                        candles = data["values"]
+                        
+                        # Current live tick/price from the active candle close
+                        price = round(float(candles[0]["close"]), 3)
+                        
+                        # Last closed candle for breakout confirmation
+                        closed_candle = candles[1]
+                        
+                        # Swing levels from historical candles
+                        past_candles = candles[2:]
+                        swing_high = round(max(float(c["high"]) for c in past_candles), 3)
+                        swing_low = round(min(float(c["low"]) for c in past_candles), 3)
+                        
+                        signal = "NEUTRAL"
                         sl = swing_low
-                        tp = round(price + (price - swing_low) * 2, 3)
-                    elif c_close < swing_low:
-                        signal = "SELL"
-                        sl = swing_high
-                        tp = round(price - (swing_high - price) * 2, 3)
+                        tp = swing_high
 
-                    # 4. Fire Telegram alert ONCE per breakout candle
-                    if signal != "NEUTRAL" and c_time != last_alerted_candle:
-                        send_telegram_alert(signal, price, sl, tp)
-                        last_alerted_candle = c_time  # Prevents repeated notifications on current candle
+                        # Candle-close breakout validation
+                        c_close = float(closed_candle["close"])
+                        c_time = closed_candle["datetime"]
 
-                live_market_data.update({
-                    "price": price,
-                    "swing_high": swing_high,
-                    "swing_low": swing_low,
-                    "signal": signal,
-                    "sl": sl,
-                    "tp": tp
-                })
+                        if c_close > swing_high:
+                            signal = "BUY"
+                            sl = swing_low
+                            tp = round(price + (price - swing_low) * 2, 3)
+                        elif c_close < swing_low:
+                            signal = "SELL"
+                            sl = swing_high
+                            tp = round(price - (swing_high - price) * 2, 3)
 
-            elif "message" in data:
-                print(f"⚠️ Twelve Data API Notice: {data['message']}")
+                        # Trigger Telegram notification
+                        if signal != "NEUTRAL" and c_time != last_alerted_candle:
+                            await send_telegram_alert(session, signal, price, sl, tp)
+                            last_alerted_candle = c_time
 
-        except Exception as e:
-            print(f"⚠️ Polling Error: {e}")
-            
-        await asyncio.sleep(3)
+                        live_market_data.update({
+                            "price": price,
+                            "swing_high": swing_high,
+                            "swing_low": swing_low,
+                            "signal": signal,
+                            "sl": sl,
+                            "tp": tp
+                        })
+                        print(f"📥 Live Price: {price:.3f} | High: {swing_high:.3f} | Low: {swing_low:.3f}")
+
+                    elif "message" in data:
+                        print(f"⚠️ Twelve Data API Notice: {data['message']}")
+
+            except Exception as e:
+                print(f"⚠️ Async Polling Error: {e}")
+                
+            # Non-blocking pause between updates
+            await asyncio.sleep(2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -171,13 +147,11 @@ app.mount("/static", StaticFiles(directory="."), name="static")
 
 @app.get("/")
 async def serve_dashboard():
-    """Serves the main web dashboard interface"""
     return FileResponse("index.html")
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
-    return {"status": "Runners FX Engine is active and running"}
+    return {"status": "Runners FX Engine active"}
 
 @app.websocket("/ws/signals")
 async def websocket_endpoint(websocket: WebSocket):
@@ -185,7 +159,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             await websocket.send_json(live_market_data)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # Fast 500ms dashboard sync
     except WebSocketDisconnect:
         pass
 
