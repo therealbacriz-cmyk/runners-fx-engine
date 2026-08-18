@@ -27,10 +27,39 @@
             <p id="signal-desc" class="text-slate-400 text-sm">Waiting for price to break structural swing points with macro confirmation...</p>
         </div>
 
+        <!-- TradingView Embedded Live Chart -->
+        <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 space-y-3">
+            <div class="flex justify-between items-center">
+                <span class="text-sm font-semibold text-slate-300">Live Execution Chart (GBPJPY 5M)</span>
+                <span class="text-xs text-slate-500">Source: TradingView</span>
+            </div>
+            <div class="w-full h-96 rounded-lg overflow-hidden border border-slate-800">
+                <div id="tradingview_gbpjpy" class="w-full h-full"></div>
+                <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+                <script type="text/javascript">
+                    new TradingView.widget({
+                        "autosize": true,
+                        "symbol": "OANDA:GBPJPY",
+                        "interval": "5",
+                        "timezone": "Etc/UTC",
+                        "theme": "dark",
+                        "style": "1",
+                        "locale": "en",
+                        "toolbar_bg": "#0f172a",
+                        "enable_publishing": false,
+                        "hide_top_toolbar": false,
+                        "hide_legend": false,
+                        "save_image": false,
+                        "container_id": "tradingview_gbpjpy"
+                    });
+                </script>
+            </div>
+        </div>
+
         <!-- Metrics Grid -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                <span class="text-xs text-slate-400 block mb-1">Live Price</span>
+                <span class="text-xs text-slate-400 block mb-1">Live Engine Price</span>
                 <span id="live-price" class="text-2xl font-bold text-white">---.---</span>
             </div>
             <div class="bg-slate-900 p-4 rounded-xl border border-slate-800">
@@ -67,13 +96,11 @@
         let previousSignal = "NEUTRAL";
         let audioCtx = null;
 
-        // Play double-beep alert sound using browser Web Audio API
         function playSignalSound(type) {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
 
-            // High pitch (880Hz) for BUY, lower pitch (440Hz) for SELL
             const freq = type === 'BUY' ? 880 : 440;
 
             function emitBeep(startTime) {
@@ -95,7 +122,7 @@
 
             const now = audioCtx.currentTime;
             emitBeep(now);
-            emitBeep(now + 0.2); // Second beep 200ms later
+            emitBeep(now + 0.2);
         }
 
         function connectWebSocket() {
@@ -112,7 +139,6 @@
 
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-
                 const formatPrice = (val) => val ? Number(val).toFixed(3) : "---.---";
 
                 document.getElementById("live-price").innerText = formatPrice(data.price);
@@ -143,7 +169,6 @@
                     signalDesc.innerText = "Price ranging within swing limits. Awaiting clear structural break.";
                 }
 
-                // Trigger audio alert when signal transitions from NEUTRAL to BUY or SELL
                 if (data.signal !== "NEUTRAL" && data.signal !== previousSignal) {
                     playSignalSound(data.signal);
                     previousSignal = data.signal;
