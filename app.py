@@ -57,7 +57,7 @@ async def send_telegram_alert(session, signal_type, price, sl, tp):
         print(f"❌ Telegram Error: {e}")
 
 async def twelve_data_listener():
-    """Robust high-frequency REST polling engine"""
+    """Robust REST polling engine managed for Twelve Data rate limits"""
     global live_market_data, last_alerted_candle
     
     print("⚡ Real-time Engine Active (REST Polling Mode)")
@@ -69,7 +69,7 @@ async def twelve_data_listener():
                 async with session.get(url, timeout=5) as resp:
                     data = await resp.json()
                     
-                    if "values" in data and len(data["values"]) >= 2:
+                    if "values" in data and len(data["values"]) >= 3:
                         candles = data["values"]
                         
                         # Current live tick/price
@@ -118,13 +118,15 @@ async def twelve_data_listener():
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")
                     elif "code" in data and data["code"] == 429:
-                        print("⚠️ API Rate limit hit. Waiting before retrying...")
+                        print("⚠️ API Rate limit hit. Waiting 15s before retrying...")
+                        await asyncio.sleep(15)
+                        continue
 
             except Exception as e:
                 print(f"⚠️ Engine Polling Error: {e}")
                 
-            # Poll every 4 seconds to comply with Twelve Data free rate limits (8 calls/min)
-            await asyncio.sleep(4)
+            # Adjusted to 8 seconds to safely maintain max 7.5 calls/min under the 8 limit
+            await asyncio.sleep(8)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
