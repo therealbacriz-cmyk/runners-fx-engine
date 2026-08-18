@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # ==================== CONFIGURATION ====================
-TWELVE_DATA_API_KEY = "6f9bc7ddd24c4453985e471b565fcd98"
+TWELVE_DATA_API_KEY = "09e2bf76463e4479b4d15ca311a53d7e"
 TELEGRAM_BOT_TOKEN = "8631774112:AAFy8m2EkEa6sqLmRs129tiTDWR57WfY7OE"
 TELEGRAM_CHAT_ID = "1825789803"
 # =======================================================
@@ -57,7 +57,7 @@ async def send_telegram_alert(session, signal_type, price, sl, tp):
         print(f"❌ Telegram Error: {e}")
 
 async def twelve_data_listener():
-    """Robust REST polling engine managed for Twelve Data rate limits"""
+    """REST polling engine configured with new key and optimized quota delay"""
     global live_market_data, last_alerted_candle
     
     print("⚡ Real-time Engine Active (REST Polling Mode)")
@@ -118,15 +118,15 @@ async def twelve_data_listener():
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")
                     elif "code" in data and data["code"] == 429:
-                        print("⚠️ API Rate limit hit. Waiting 15s before retrying...")
-                        await asyncio.sleep(15)
+                        print("⚠️ API Rate limit hit. Waiting 30s before retrying...")
+                        await asyncio.sleep(30)
                         continue
 
             except Exception as e:
                 print(f"⚠️ Engine Polling Error: {e}")
                 
-            # Adjusted to 8 seconds to safely maintain max 7.5 calls/min under the 8 limit
-            await asyncio.sleep(8)
+            # Polling every 15 seconds keeps usage at ~240 credits/hr to protect the 800 daily limit
+            await asyncio.sleep(15)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
