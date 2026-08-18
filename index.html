@@ -66,7 +66,11 @@
         let socket;
 
         function connectWebSocket() {
-            socket = new WebSocket("ws://127.0.0.1:8000/ws/signals");
+            // Automatically select wss:// when hosted on HTTPS (Render) or ws:// locally
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${protocol}//${window.location.host}/ws/signals`;
+
+            socket = new WebSocket(wsUrl);
 
             socket.onopen = () => {
                 const statusEl = document.getElementById("connection-status");
