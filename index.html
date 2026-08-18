@@ -64,9 +64,41 @@
     <!-- Client Script -->
     <script>
         let socket;
+        let previousSignal = "NEUTRAL";
+        let audioCtx = null;
+
+        // Play double-beep alert sound using browser Web Audio API
+        function playSignalSound(type) {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            // High pitch (880Hz) for BUY, lower pitch (440Hz) for SELL
+            const freq = type === 'BUY' ? 880 : 440;
+
+            function emitBeep(startTime) {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, startTime);
+
+                gain.gain.setValueAtTime(0.15, startTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.15);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start(startTime);
+                osc.stop(startTime + 0.15);
+            }
+
+            const now = audioCtx.currentTime;
+            emitBeep(now);
+            emitBeep(now + 0.2); // Second beep 200ms later
+        }
 
         function connectWebSocket() {
-            // Automatically select wss:// when hosted on HTTPS (Render) or ws:// locally
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
             const wsUrl = `${protocol}//${window.location.host}/ws/signals`;
 
@@ -109,6 +141,14 @@
                     signalText.className = "text-5xl font-extrabold my-4 text-slate-500";
                     signalText.innerText = "NEUTRAL";
                     signalDesc.innerText = "Price ranging within swing limits. Awaiting clear structural break.";
+                }
+
+                // Trigger audio alert when signal transitions from NEUTRAL to BUY or SELL
+                if (data.signal !== "NEUTRAL" && data.signal !== previousSignal) {
+                    playSignalSound(data.signal);
+                    previousSignal = data.signal;
+                } else if (data.signal === "NEUTRAL") {
+                    previousSignal = "NEUTRAL";
                 }
             };
 
