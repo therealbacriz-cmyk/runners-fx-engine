@@ -86,7 +86,7 @@ async def send_telegram_alert(session, signal_type, entry_price, sl, tp):
         f"<b>Action:</b> {signal_type}\n"
         f"<b>Entry Price:</b> {entry_price:.3f}\n"
         f"<b>Stop Loss (SL):</b> {sl:.3f}\n"
-        f"<b>Take Profit (TP):</b> {tp:.3f}\n\n"
+        f"<b>Take Profit (TP):</b> {tp:.3f} (1:2 R:R)\n\n"
         f"<i>Structure Breakout Confirmed (Body + Buffer)</i>"
     )
     
@@ -146,17 +146,17 @@ async def twelve_data_listener():
                         c_close = float(closed_candle["close"])
                         c_time = closed_candle["datetime"]
 
-                        # Check for valid breakout signals with buffer
+                        # Check for valid breakout signals with buffer (1:2 RR Target)
                         if c_close >= (swing_high + BOS_BUFFER_PIPS):
                             signal = "BUY"
                             entry_price = price
                             sl = swing_low
-                            tp = round(price + (price - swing_low) * 1.0, 3)  # 1:1 Risk-to-Reward
+                            tp = round(price + (price - swing_low) * 2.0, 3)  # 1:2 Risk-to-Reward
                         elif c_close <= (swing_low - BOS_BUFFER_PIPS):
                             signal = "SELL"
                             entry_price = price
                             sl = swing_high
-                            tp = round(price - (swing_high - price) * 1.0, 3)  # 1:1 Risk-to-Reward
+                            tp = round(price - (swing_high - price) * 2.0, 3)  # 1:2 Risk-to-Reward
 
                         if signal != "NEUTRAL" and c_time != last_alerted_candle:
                             await send_telegram_alert(session, signal, entry_price, sl, tp)
@@ -171,7 +171,7 @@ async def twelve_data_listener():
                             "sl": sl,
                             "tp": tp
                         })
-                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal} | Entry: {entry_price:.3f} | SL: {sl:.3f} | TP: {tp:.3f}")
+                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal} | Entry: {entry_price:.3f} | SL: {sl:.3f} | TP: {tp:.3f} (1:2 R:R)")
 
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")
