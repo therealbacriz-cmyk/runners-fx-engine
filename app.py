@@ -3,6 +3,8 @@ import asyncio
 import json
 import uvicorn
 import aiohttp
+from datetime import datetime
+import pytz
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +15,10 @@ from fastapi.staticfiles import StaticFiles
 TWELVE_DATA_API_KEY = "09e2bf76463e4479b4d15ca311a53d7e"
 TELEGRAM_BOT_TOKEN = "8631774112:AAFy8m2EkEa6sqLmRs129tiTDWR57WfY7OE"
 TELEGRAM_CHAT_ID = "1825789803"
+
+# Session Time Filter (East Africa Time)
+START_HOUR_EAT = 7   # 7:00 AM EAT
+END_HOUR_EAT = 19   # 7:00 PM EAT
 # =======================================================
 
 live_market_data = {
@@ -27,6 +33,12 @@ live_market_data = {
 }
 
 last_alerted_candle = None
+
+def is_within_trading_window() -> bool:
+    """Checks if current time in Uganda/EAT is between 7:00 AM and 7:00 PM"""
+    eat_tz = pytz.timezone("Africa/Kampala")
+    now_eat = datetime.now(eat_tz)
+    return START_HOUR_EAT <= now_eat.hour < END_HOUR_EAT
 
 async def send_telegram_alert(session, signal_type, price, sl, tp):
     if not TELEGRAM_BOT_TOKEN:
@@ -57,7 +69,7 @@ async def send_telegram_alert(session, signal_type, price, sl, tp):
         print(f"❌ Telegram Error: {e}")
 
 async def twelve_data_listener():
-    """REST polling engine configured with new key and optimized quota delay"""
+    """REST polling engine with strict 7 AM - 7 PM EAT trading window enforcement"""
     global live_market_data, last_alerted_candle
     
     print("⚡ Real-time Engine Active (REST Polling Mode)")
@@ -66,19 +78,28 @@ async def twelve_data_listener():
     async with aiohttp.ClientSession() as session:
         while True:
             try:
+                # 1. Check time window
+                if not is_within_trading_window():
+                    live_market_data.update({
+                        "signal": "OUTSIDE_TRADING_HOURS",
+                        "sl": 0.0,
+                        "tp": 0.0
+                    })
+                    print("🌙 Outside active window (7:00 AM – 7:00 PM EAT). Pausing signals...")
+                    # Sleep 60s when outside trading window to conserve API credits
+                    await asyncio.sleep(60)
+                    continue
+
+                # 2. Fetch live market data during active hours
                 async with session.get(url, timeout=5) as resp:
                     data = await resp.json()
                     
                     if "values" in data and len(data["values"]) >= 3:
                         candles = data["values"]
                         
-                        # Current live tick/price
                         price = round(float(candles[0]["close"]), 3)
-                        
-                        # Closed 5M candle for breakout validation
                         closed_candle = candles[1]
                         
-                        # High/Low pivots from historical bars
                         past_candles = candles[2:]
                         swing_high = round(max(float(c["high"]) for c in past_candles), 3)
                         swing_low = round(min(float(c["low"]) for c in past_candles), 3)
@@ -87,7 +108,6 @@ async def twelve_data_listener():
                         sl = swing_low
                         tp = swing_high
 
-                        # Candle-close breakout check
                         c_close = float(closed_candle["close"])
                         c_time = closed_candle["datetime"]
 
@@ -100,7 +120,6 @@ async def twelve_data_listener():
                             sl = swing_high
                             tp = round(price - (swing_high - price) * 2, 3)
 
-                        # Trigger Telegram notification
                         if signal != "NEUTRAL" and c_time != last_alerted_candle:
                             await send_telegram_alert(session, signal, price, sl, tp)
                             last_alerted_candle = c_time
@@ -113,7 +132,7 @@ async def twelve_data_listener():
                             "sl": sl,
                             "tp": tp
                         })
-                        print(f"📥 Live GBP/JPY Price: {price:.3f} | Signal: {signal}")
+                        print(f"📥 [EAT Active] GBP/JPY: {price:.3f} | Signal: {signal}")
 
                     elif "message" in data:
                         print(f"⚠️ Twelve Data API Error: {data['message']}")
@@ -125,7 +144,6 @@ async def twelve_data_listener():
             except Exception as e:
                 print(f"⚠️ Engine Polling Error: {e}")
                 
-            # Polling every 15 seconds keeps usage at ~240 credits/hr to protect the 800 daily limit
             await asyncio.sleep(15)
 
 @asynccontextmanager
